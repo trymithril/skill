@@ -1,9 +1,19 @@
 ---
 name: mithril
 version: "0.1.0"
-description: A credit card for AI agents. Spend USDC on-chain today, pay your bill at the end of the month. No interest if paid on time.
+description: >
+  Use this skill whenever the user asks to send USDC, make on-chain payments,
+  check credit or spending power, manage crypto wallets, repay a credit line,
+  view a balance sheet or ledger, interact with x402 services, or do anything
+  involving the Mithril API. Also trigger when the user mentions "Mithril",
+  "agent credit", "stablecoin payments", "USDC transfer", "crypto credit card",
+  "on-chain payment", "pay with crypto", "agent wallet", or asks about on-chain
+  spending limits, credit lines, or billing. Covers Base, Polygon, Arbitrum,
+  Ethereum, and Solana networks. Use this skill even if you're unsure whether
+  the task involves Mithril — if it sounds like agent payments, wallets, or
+  credit, trigger this skill and check.
 user-invocable: true
-allowed-tools: Read, Grep, Glob
+allowed-tools: Read, Grep, Glob, Bash
 ---
 
 ```
@@ -14,8 +24,6 @@ Auth:  Authorization: Bearer <MITHRIL_API_KEY>
 Docs:  This file is canonical.
 
 Spending:
-  POST /v1/agent/transfer                    -> send USDC (auto-selects primary wallet)
-  POST /v1/wallets/:id/transfer              -> send from a specific wallet
   GET  /v1/agent/spending-power              -> how much you can spend right now
 
 Purchasing (x402):
@@ -27,13 +35,18 @@ Wallets:
   GET  /v1/wallets                           -> list your wallets
   GET  /v1/wallets/:id                       -> get a single wallet
   PUT  /v1/wallets/:id/primary               -> set primary wallet
-  PUT  /v1/wallets/:id/spend-limits          -> update daily/per-tx limits
   POST /v1/wallets/:id/addresses             -> add address on a new network
 
 Credit (per wallet):
   POST /v1/wallets/:id/repay                 -> make a payment (full, minimum, or custom)
   POST /v1/wallets/:id/cash-advance          -> withdraw USDC to deposit address (3% fee)
+  POST /v1/wallets/:id/reconcile             -> detect deposits and apply to balance
   GET  /v1/wallets/:id/transactions          -> transaction history
+  GET  /v1/wallets/:id/billing               -> billing info for this wallet
+
+Cards:
+  GET  /v1/agent/cards                       -> list your virtual cards
+  GET  /v1/agent/cards/:id/details           -> get card details (PAN, CVV, etc.)
 
 Account:
   GET  /v1/agent                             -> your agent profile
@@ -57,8 +70,7 @@ This skill gives you a line of credit. You can spend USDC on-chain to pay for se
 4. As long as you pay your monthly bill, you can keep spending.
 
 **What you can do with this skill:**
-- **Pay for things** — send USDC to any on-chain address. Works on Base, Polygon, Arbitrum, Ethereum, and Solana. Each wallet has deposits (your on-chain USDC) and a credit line. Deposits are spent first, then credit kicks in automatically.
-- **Purchase from services** — if a service supports x402 (HTTP 402 Payment Required), point Mithril at the URL. It handles payment negotiation, signing, and retry automatically. You get the service's response back.
+- **Purchase from services** — if a service supports x402 (HTTP 402 Payment Required), point Mithril at the URL. It handles payment negotiation, signing, and retry automatically. You get the service's response back. Each wallet has deposits (your on-chain USDC) and a credit line. Deposits are spent first, then credit kicks in automatically.
 - **Check your spending power** — see deposits + available credit across all wallets.
 - **Manage your credit** — make payments, view transactions. Pay your bill on time and you never pay interest.
 - **Take a cash advance** — withdraw USDC from your credit line to your deposit address. 3% fee, interest starts immediately.
@@ -66,7 +78,7 @@ This skill gives you a line of credit. You can spend USDC on-chain to pay for se
 
 ## Setup
 
-Your human operator signs up at the dashboard, creates your agent, sets up your wallets, and generates an API key for you. One human account can run multiple agents — each agent gets its own API key and its own wallets. API keys are not shared between agents. Wallets are created and configured by your operator through the dashboard — you cannot create wallets yourself.
+Your human operator signs up at the dashboard, creates your agent, sets up your wallets, and generates an API key for you. One human account can run multiple agents — each agent gets its own API key and its own wallets. Wallets are created and configured by your operator through the dashboard — you cannot create wallets yourself.
 
 This skill is for **one specific agent**. If your operator runs multiple agents, each one has a separate `MITHRIL_API_KEY` and operates independently.
 
@@ -75,94 +87,126 @@ Store your API key:
 export MITHRIL_API_KEY="mith_..."
 ```
 
-Every request needs these headers:
+Every request needs this header:
 ```
 Authorization: Bearer <MITHRIL_API_KEY>
 ```
 
-## Security
-
-Your API key is the only thing protecting your account. There is no 16-digit card number — the key IS your card. **Keep it safe. Do not log it, print it, or include it in any output.**
-
-If your key is compromised, your human operator can revoke it and generate a new one from the dashboard. There are also spending controls (daily limits, per-transaction limits) configurable per wallet to prevent runaway spending.
-
-You start with a small credit limit. It grows as you build a repayment history.
-
-## First Use — Verify Your Account
-
-```bash
-# Check that your API key works
-curl -sS https://api.trymithril.com/v1/agent \
-  -H "Authorization: Bearer $MITHRIL_API_KEY"
-
-# See how much you can spend
-curl -sS https://api.trymithril.com/v1/agent/spending-power \
-  -H "Authorization: Bearer $MITHRIL_API_KEY"
-
-# List your wallets
-curl -sS https://api.trymithril.com/v1/wallets \
-  -H "Authorization: Bearer $MITHRIL_API_KEY"
-```
-
-If `spending-power` shows `total_spending_power > 0`, you're ready to spend.
+**Security:** Your API key is the only thing protecting your account. The key IS your card. **Never log it, print it, or include it in any output.** If compromised, your operator can revoke it from the dashboard.
 
 ---
 
-## Spending
+## Trigger Phrases & Example Prompts
 
-The main action. Send USDC to pay for something.
+| User says | Endpoint |
+|-----------|----------|
+| "How much can I spend?" / "What's my spending power?" | `GET /v1/agent/spending-power` |
+| "Pay my Mithril bill" / "Repay my credit line" | `POST /v1/wallets/:id/repay` |
+| "Buy data from this API" / "Purchase from this x402 service" | `POST /v1/agent/purchase` |
+| "How much does this service cost?" | `GET /v1/wallets/:id/purchase/preview` |
+| "Show me my balance sheet" | `GET /v1/balance-sheet` |
+| "What's my credit score?" / "Show my credit profile" | `GET /v1/credit-profile` |
+| "List my wallets" / "What wallets do I have?" | `GET /v1/wallets` |
+| "Show my transaction history" | `GET /v1/wallets/:id/transactions` |
+| "Show me my ledger" | `GET /v1/ledger` |
+| "I need a cash advance" | `POST /v1/wallets/:id/cash-advance` |
+| "Check for new deposits" | `POST /v1/wallets/:id/reconcile` |
+| "Show my cards" | `GET /v1/agent/cards` |
 
-### Transfer (recommended)
+---
 
-Auto-selects your primary wallet. Deposits are spent first; credit is used if deposits are insufficient.
+## Endpoint Decision Guide
 
-```
-POST /v1/agent/transfer
-```
+When the user's request could map to multiple endpoints, use this decision tree:
 
-**Request:**
+1. **Buying from a service that returns HTTP 402** → `POST /v1/agent/purchase`
+   - Mithril handles payment negotiation, signing, and retry automatically.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `destination` | string | yes | Recipient on-chain address |
-| `amount` | string | yes | USDC amount (e.g. `"25.00"`) |
-| `network` | string | yes | `"base"`, `"polygon"`, `"arbitrum"`, `"ethereum"`, or `"solana"` |
+2. **Not sure if a service charges?** → `GET /v1/wallets/:id/purchase/preview` first
+   - Check the price before committing. If `payment_required` is false, call the service directly.
 
-**Example:**
+3. **Need to use a specific wallet instead of primary** → use the `/v1/wallets/:id/…` variant of any endpoint.
+
+4. **Checking if you can afford something** → `GET /v1/agent/spending-power`
+   - Always do this before large purchases to avoid wasting a rate-limited call on insufficient funds.
+
+5. **Paying the monthly bill** → `POST /v1/wallets/:id/repay`
+   - Use `mode: "full"` to avoid interest. Use `mode: "minimum"` if the user can't pay in full.
+
+6. **Withdrawing credit as USDC to the deposit address** → `POST /v1/wallets/:id/cash-advance`
+   - **Avoid unless the user explicitly asks.** 3% fee + immediate interest.
+
+---
+
+## Typical Workflow: Purchasing from an x402 Service
 
 ```bash
-curl -sS -X POST https://api.trymithril.com/v1/agent/transfer \
+# Step 1: Preview the price (optional but recommended)
+curl -sS "https://api.trymithril.com/v1/wallets/YOUR_WALLET_ID/purchase/preview?url=https://api.service.com/data&method=GET" \
+  -H "Authorization: Bearer $MITHRIL_API_KEY"
+
+# Step 2: Make the purchase
+curl -sS -X POST https://api.trymithril.com/v1/agent/purchase \
   -H "Authorization: Bearer $MITHRIL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "destination": "0xRecipientAddress",
-    "amount": "25.00",
-    "network": "base"
+    "url": "https://api.service.com/data",
+    "method": "GET"
   }'
+
+# Step 3: Use the response body directly — it's the raw service response
 ```
 
-**Response (200):**
+---
 
+## Common Pitfalls
+
+**Read these before making API calls.**
+
+1. **Always check spending-power before a large purchase.** Spending endpoints are rate-limited (~10/min). Don't waste a call on an insufficient-funds failure — check `GET /v1/agent/spending-power` first.
+
+2. **`response.body` from purchases is the raw response.** After `POST /v1/agent/purchase`, the `response.body` field contains the service's raw response (typically JSON). Use it directly.
+
+3. **The `amount` field is a string, not a number.** Send `"25.00"` not `25.00`. The API rejects numeric values.
+
+4. **Never log or print the API key.** The key IS the credential. No secondary authentication exists.
+
+5. **Cash advances have a 3% fee and immediate interest.** Only use `POST /v1/wallets/:id/cash-advance` when the user explicitly asks.
+
+6. **Rate limits are tight for spending endpoints (~10/min).** Batch your logic. Plan all purchases first, then execute. Read endpoints are more generous (~60/min).
+
+7. **Deposits are spent before credit automatically.** You don't need to manage this — the response shows `deposit_used` and `credit_used`.
+
+8. **Wallet IDs are required for per-wallet endpoints.** Get them from `GET /v1/wallets` first. Don't guess or hardcode.
+
+---
+
+## Error Handling
+
+| HTTP Code | What Happened | What To Do |
+|-----------|---------------|------------|
+| **400** Bad Request | Missing or invalid fields. | Check request body. Common: missing field, wrong `network`, numeric `amount` instead of string. Fix and retry. |
+| **401** Unauthorized | API key missing or invalid. | Ask the user to verify `MITHRIL_API_KEY`. Should start with `mith_`. Operator can generate a new one from the dashboard. |
+| **403** Forbidden | Action disallowed. Wallet may be frozen. | Check `credit_status` on the wallet — if `"frozen"`, operator needs to resolve missed payments. Do not retry. |
+| **404** Not Found | Resource doesn't exist. | Verify wallet ID with `GET /v1/wallets`. |
+| **429** Too Many Requests | Rate limited. | Back off 5-10 seconds. **Do not retry spending endpoints more than once** — duplicate payments are worse than failures. |
+| **500** Internal Error | Server failure. | Retry once after a few seconds. If it persists, tell user to contact team@trymithril.com. |
+
+**Always surface `error.message` from the response to the user** — it's human-readable and explains what went wrong.
+
+Error format:
 ```json
 {
-  "tx_hash": "0xabc123...",
-  "amount": "25.00",
-  "currency": "USDC",
-  "network": "base",
-  "deposit_used": "25.00",
-  "credit_used": "0.00"
+  "error": {
+    "code": "bad_request",
+    "message": "destination is required"
+  }
 }
 ```
 
-`deposit_used` and `credit_used` show exactly how the payment was funded.
+---
 
-### Transfer from a Specific Wallet
-
-```
-POST /v1/wallets/:id/transfer
-```
-
-Same request and response as above. Uses the specified wallet instead of auto-selecting.
+## API Reference
 
 ### Spending Power
 
@@ -173,30 +217,33 @@ GET /v1/agent/spending-power
 ```
 
 **Response (200):**
-
 ```json
 {
   "deposit_balance": "500.00",
   "credit_available": "4500.00",
-  "total_spending_power": "5000.00"
+  "total_spending_power": "5000.00",
+  "wallets": [
+    {
+      "wallet_id": "uuid",
+      "label": "Main Wallet",
+      "is_primary": true,
+      "deposit_balance": "500.00",
+      "available_credit": "4500.00",
+      "spending_power": "5000.00"
+    }
+  ]
 }
 ```
 
 ---
 
-## Purchasing (x402)
+### Purchase
 
-Some services accept payment via the x402 protocol (HTTP 402 Payment Required). Instead of sending USDC to an address manually, you give Mithril the URL and it handles everything — makes the request, negotiates payment, signs the transaction, retries with payment proof, and returns the service's response.
-
-### Purchase (recommended)
-
-Auto-selects your primary wallet.
+Auto-selects your primary wallet. Handles x402 payment negotiation automatically.
 
 ```
 POST /v1/agent/purchase
 ```
-
-**Request:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -205,27 +252,14 @@ POST /v1/agent/purchase
 | `headers` | object | no | Custom headers as key-value pairs |
 | `body` | string | no | Request body (base64 for binary, raw string otherwise) |
 
-**Example:**
-
-```bash
-curl -sS -X POST https://api.trymithril.com/v1/agent/purchase \
-  -H "Authorization: Bearer $MITHRIL_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://api.service.com/data",
-    "method": "GET"
-  }'
-```
-
 **Response (200):**
-
 ```json
 {
   "status": "completed",
   "response": {
     "status_code": 200,
     "headers": {"content-type": "application/json"},
-    "body": "eyJkYXRhIjogWy4uLl19"
+    "body": "{\"data\": [...]}"
   },
   "payment": {
     "amount": "0.05",
@@ -240,10 +274,10 @@ curl -sS -X POST https://api.trymithril.com/v1/agent/purchase \
 }
 ```
 
-- `response.body` is base64-encoded. Decode it to get the service's actual response.
+- `response.body` is the raw response body from the service (typically JSON).
 - `payment` is null if the service didn't require payment (no 402).
 
-### Purchase from a Specific Wallet
+### Purchase from Specific Wallet
 
 ```
 POST /v1/wallets/:id/purchase
@@ -259,15 +293,12 @@ Check what a service will cost before committing.
 GET /v1/wallets/:id/purchase/preview?url=https://api.service.com/data&method=GET
 ```
 
-**Query params:**
-
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `url` | string | yes | Target service URL |
 | `method` | string | no | HTTP method (default `"GET"`) |
 
 **Response (200) — payment required:**
-
 ```json
 {
   "url": "https://api.service.com/data",
@@ -288,7 +319,6 @@ GET /v1/wallets/:id/purchase/preview?url=https://api.service.com/data&method=GET
 ```
 
 **Response (200) — no payment required:**
-
 ```json
 {
   "url": "https://api.service.com/data",
@@ -304,54 +334,26 @@ GET /v1/wallets/:id/purchase/preview?url=https://api.service.com/data&method=GET
 
 ---
 
-## Credit — Your Monthly Bill
+### Repay
 
-Each wallet has its own credit line. You spend during the month, and on your billing day you get a statement. You have 21 days to pay it.
-
-### How Billing Works
-
-- **Billing day**: Your statement is generated (shows what you owe).
-- **Grace period**: 21 days after billing day. Pay the full balance in this window and you owe zero interest.
-- **Minimum payment**: 2% of outstanding balance or $25, whichever is greater.
-- **Carry a balance**: Pay any amount between the minimum and the full balance. Interest accrues on unpaid amounts after the grace period.
-- **Auto-collection**: On the payment due date, the system attempts to collect from your deposit balance automatically.
-
-### Make a Payment
+Make a payment on your credit line.
 
 ```
 POST /v1/wallets/:id/repay
 ```
-
-**Request:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `mode` | string | yes | `"full"`, `"minimum"`, or `"custom"` |
 | `amount` | string | conditional | Required when `mode` is `"custom"` |
 
-**Example:**
+**Response (200):** Returns the updated wallet object.
 
-```bash
-# Pay in full (no interest)
-curl -sS -X POST https://api.trymithril.com/v1/wallets/YOUR_WALLET_ID/repay \
-  -H "Authorization: Bearer $MITHRIL_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "full"}'
-
-# Pay the minimum
-curl -sS -X POST https://api.trymithril.com/v1/wallets/YOUR_WALLET_ID/repay \
-  -H "Authorization: Bearer $MITHRIL_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "minimum"}'
-
-# Pay a specific amount
-curl -sS -X POST https://api.trymithril.com/v1/wallets/YOUR_WALLET_ID/repay \
-  -H "Authorization: Bearer $MITHRIL_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "custom", "amount": "200.00"}'
-```
-
-**Response (200):** Returns the updated wallet object (see Wallet format below).
+**Billing details:**
+- **Billing day**: Statement generated showing what you owe.
+- **Grace period**: 21 days. Pay in full = zero interest.
+- **Minimum payment**: 2% of outstanding balance or $25, whichever is greater.
+- **Auto-collection**: On the due date, the system auto-collects from your deposit balance.
 
 ### Cash Advance
 
@@ -361,13 +363,44 @@ Withdraw USDC from your credit line to your wallet's deposit address. **3% fee. 
 POST /v1/wallets/:id/cash-advance
 ```
 
-**Request:**
-
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `amount` | string | yes | USDC amount to withdraw |
 
 **Response (200):** Returns the updated wallet object.
+
+### Reconcile Deposits
+
+Detect on-chain USDC deposits and apply them to your outstanding credit balance. The wallet's `auto_collect_mode` determines how much is applied (`full`, `minimum`, or `custom`).
+
+```
+POST /v1/wallets/:id/reconcile
+```
+
+No request body needed.
+
+**Response (200):**
+
+```json
+{
+  "amount_applied": "100.00",
+  "remaining_balance": "250.00",
+  "deposit_balance": "400.00",
+  "tx_hash": "0x...",
+  "network": "base",
+  "auto_collect_mode": "full"
+}
+```
+
+### Wallet Billing
+
+Billing info for a wallet.
+
+```
+GET /v1/wallets/:id/billing
+```
+
+**Response (200):** Billing details for the wallet's current cycle.
 
 ### Wallet Transactions
 
@@ -377,44 +410,39 @@ All activity on a wallet's credit line.
 GET /v1/wallets/:id/transactions?limit=50
 ```
 
-**Query params:**
-
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `limit` | number | no | Max results (default 50, max 100) |
 
 **Response (200):**
-
 ```json
 [
   {
     "id": "uuid",
-    "credit_line_id": "uuid",
-    "type": "spend",
+    "agent_id": "uuid",
+    "wallet_id": "uuid",
+    "debit_account": "liability.credit.line",
+    "credit_account": "asset.cash",
     "amount": "25.00",
-    "destination_address": "0x...",
+    "currency": "USDC",
+    "entry_type": "credit.spend",
+    "reference_id": "uuid",
+    "description": "Credit spend: 25.00 USDC",
     "network": "base",
     "tx_hash": "0x...",
-    "status": "completed",
-    "description": "Transfer to 0x...",
+    "merchant_domain": "api.service.com",
     "created_at": "2026-02-08T12:00:00Z"
   }
 ]
 ```
 
-**Transaction types:** `spend`, `repayment`, `auto_collect`, `interest`, `cash_advance`, `fee`, `purchase`
-
-**Statuses:** `pending`, `completed`, `failed`, `reversed`
+**Entry types:** `credit.spend`, `credit.repayment`, `credit.auto_collect`, `credit.interest`, `credit.cash_advance`, `credit.fee`, `transfer.send`
 
 ---
 
-## Wallets
+### Wallets
 
-Each wallet is a complete spending unit with its own deposit balance, credit line, on-chain addresses, and spend limits. Deposits (on-chain USDC anyone can send to your address) are spent first; credit kicks in when deposits are insufficient.
-
-### The Wallet Object
-
-Every wallet endpoint that returns a wallet uses this format:
+#### The Wallet Object
 
 ```json
 {
@@ -422,7 +450,7 @@ Every wallet endpoint that returns a wallet uses this format:
   "label": "Main Wallet",
   "is_primary": true,
   "credit_limit": "5000.00",
-  "apr": "10.00",
+  "apr": "0.20",
   "outstanding_balance": "350.00",
   "accrued_interest": "2.50",
   "available_credit": "4647.50",
@@ -434,8 +462,7 @@ Every wallet endpoint that returns a wallet uses this format:
     {"network": "base", "address": "0x..."},
     {"network": "polygon", "address": "0x..."}
   ],
-  "daily_spend_limit": "1000.00",
-  "single_spend_limit": "500.00",
+  "is_frozen": false,
   "auto_collect_mode": "full",
   "billing_day": 15,
   "grace_period_active": true,
@@ -445,16 +472,16 @@ Every wallet endpoint that returns a wallet uses this format:
 ```
 
 Key fields:
-- `deposit_balance` — your on-chain USDC in this wallet
+- `deposit_balance` — on-chain USDC in this wallet
 - `available_credit` — how much more you can borrow
 - `spending_power` — deposit_balance + available_credit
-- `total_owed` — outstanding_balance + accrued_interest
+- `total_owed` — outstanding_balance + cash_advance_balance + accrued_interest
 - `credit_status` — `"active"`, `"frozen"`, or `"closed"`
+- `is_frozen` — whether the wallet is currently frozen
 - `grace_period_active` — if true, new charges accrue no interest until the due date
 - `missed_payments` — keep this at 0. Missing payments freezes your credit line.
-- `addresses` — on-chain addresses where anyone can send USDC to fund your wallet
 
-### List Wallets
+#### List Wallets
 
 ```
 GET /v1/wallets
@@ -462,7 +489,7 @@ GET /v1/wallets
 
 **Response (200):** Array of wallet objects.
 
-### Get Wallet
+#### Get Wallet
 
 ```
 GET /v1/wallets/:id
@@ -470,9 +497,9 @@ GET /v1/wallets/:id
 
 **Response (200):** Single wallet object.
 
-### Set Primary Wallet
+#### Set Primary Wallet
 
-The primary wallet is used by `POST /v1/agent/transfer` and `POST /v1/agent/purchase`.
+The primary wallet is used by `POST /v1/agent/purchase`.
 
 ```
 PUT /v1/wallets/:id/primary
@@ -480,30 +507,13 @@ PUT /v1/wallets/:id/primary
 
 **Response (200):** The updated wallet object.
 
-### Update Spend Limits
-
-```
-PUT /v1/wallets/:id/spend-limits
-```
-
-**Request:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `daily_limit_usdc` | string | no | New daily limit |
-| `single_limit_usdc` | string | no | New per-transaction limit |
-
-**Response (200):** The updated wallet object.
-
-### Add Wallet Address
+#### Add Wallet Address
 
 Add an on-chain address on a new network to receive deposits.
 
 ```
 POST /v1/wallets/:id/addresses
 ```
-
-**Request:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -513,16 +523,39 @@ POST /v1/wallets/:id/addresses
 
 ---
 
-## Account & Reporting
+### Cards
 
-### Agent Profile
+Virtual cards linked to your agent for payments where x402 isn't supported.
+
+#### List Cards
+
+```
+GET /v1/agent/cards
+```
+
+**Response (200):** Array of card objects.
+
+#### Get Card Details
+
+Retrieve full card details including PAN, CVV, and expiration.
+
+```
+GET /v1/agent/cards/:id/details
+```
+
+**Response (200):** Card object with sensitive details.
+
+---
+
+### Account & Reporting
+
+#### Agent Profile
 
 ```
 GET /v1/agent
 ```
 
 **Response (200):**
-
 ```json
 {
   "id": "uuid",
@@ -535,16 +568,13 @@ GET /v1/agent
 }
 ```
 
-The `wallets` array contains full wallet objects (same format as above).
-
-### Agent Stats
+#### Agent Stats
 
 ```
 GET /v1/agent/stats
 ```
 
 **Response (200):**
-
 ```json
 {
   "total_orders": 42,
@@ -554,16 +584,15 @@ GET /v1/agent/stats
 }
 ```
 
-### Balance Sheet
+#### Balance Sheet
 
-Full view of your assets, liabilities, and equity. Computed live.
+Full view of assets, liabilities, and equity. Computed live.
 
 ```
 GET /v1/balance-sheet
 ```
 
 **Response (200):**
-
 ```json
 {
   "agent_id": "uuid",
@@ -594,7 +623,7 @@ GET /v1/balance-sheet
 }
 ```
 
-### Credit Profile
+#### Credit Profile
 
 Your credit tier determines your limit and APR. Pay on time to improve it.
 
@@ -603,7 +632,6 @@ GET /v1/credit-profile
 ```
 
 **Response (200):**
-
 ```json
 {
   "agent_id": "uuid",
@@ -613,13 +641,15 @@ GET /v1/credit-profile
   "defaulted_loans": 0,
   "missed_payments_ever": 0,
   "tier": "good",
-  "history_score": 1.05
+  "history_score": 1.05,
+  "first_loan_at": "2026-01-20T10:00:00Z",
+  "last_loan_at": "2026-02-05T14:30:00Z"
 }
 ```
 
 Tiers: `new` → `established` → `good` → `excellent` (or `risky` → `defaulter`)
 
-### Ledger
+#### Ledger
 
 Full double-entry record of all financial activity.
 
@@ -627,22 +657,20 @@ Full double-entry record of all financial activity.
 GET /v1/ledger?entry_type=credit.spend&limit=20
 ```
 
-**Query params:**
-
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `entry_type` | string | no | Filter by type (see below) |
 | `limit` | number | no | Max results (default 50) |
 
-**Entry types:** `credit.spend`, `credit.repayment`, `credit.auto_collect`, `credit.interest`, `credit.cash_advance`, `credit.fee`, `transfer.send`
+**Entry types:** `credit.spend`, `credit.repayment`, `credit.auto_collect`, `credit.interest`, `credit.cash_advance`, `credit.fee`, `credit.pool.funding`, `transfer.send`
 
 **Response (200):**
-
 ```json
 [
   {
     "id": "uuid",
     "agent_id": "uuid",
+    "wallet_id": "uuid",
     "debit_account": "liability.credit.line",
     "credit_account": "asset.cash",
     "amount": "25.00",
@@ -652,35 +680,11 @@ GET /v1/ledger?entry_type=credit.spend&limit=20
     "description": "Credit spend: 25.00 USDC",
     "network": "base",
     "tx_hash": "0x...",
+    "merchant_domain": "api.service.com",
     "created_at": "2026-02-08T12:00:00Z"
   }
 ]
 ```
-
----
-
-## Errors
-
-All errors use this format:
-
-```json
-{
-  "error": {
-    "code": "bad_request",
-    "message": "destination is required",
-    "request_id": "optional-trace-id"
-  }
-}
-```
-
-| HTTP Code | Error Code | Meaning |
-|-----------|------------|---------|
-| 400 | `bad_request` | Missing or invalid fields |
-| 401 | `unauthorized` | API key missing or invalid |
-| 403 | `forbidden` | Action not allowed |
-| 404 | `not_found` | Resource doesn't exist |
-| 429 | `too_many_requests` | Rate limited (spending: ~10/min, reads: ~60/min) |
-| 500 | `internal_error` | Server error |
 
 ---
 
