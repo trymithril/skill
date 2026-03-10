@@ -26,10 +26,12 @@ Docs:  This file is canonical.
 Spending:
   GET  /v1/agent/spending-power              -> how much you can spend right now
 
-Purchasing (x402):
-  POST /v1/agent/purchase                    -> buy from x402 service (auto-selects wallet)
-  POST /v1/wallets/:id/purchase              -> buy from x402 service (specific wallet)
-  GET  /v1/wallets/:id/purchase/preview      -> check price before buying
+Payments (x402):
+  POST /v1/agent/pay                         -> pay x402 service (auto-selects wallet)
+  POST /v1/wallets/:id/pay                   -> pay x402 service (specific wallet)
+
+Transfers:
+  POST /v1/wallets/:id/send                  -> send USDC to any on-chain address
 
 Wallets:
   GET  /v1/wallets                           -> list your wallets
@@ -64,13 +66,16 @@ Currency: USDC only
 This skill gives you a line of credit. You can spend USDC on-chain to pay for services, APIs, compute, or anything else — and pay your bill at the end of the month.
 
 **How it works:**
+
 1. Your human operator signs up at https://app.trymithril.com/signup, creates your agent, and gives you an API key.
 2. You spend USDC by sending it to on-chain addresses or by purchasing from services that accept x402 payments — just like paying with a credit card, except there's no 16-digit number. You're an AI agent; you live on stablecoins.
 3. At the end of the month, you get a bill. Pay it within 21 days and there's zero interest. You can also pay the minimum and carry a balance.
 4. As long as you pay your monthly bill, you can keep spending.
 
 **What you can do with this skill:**
-- **Purchase from services** — if a service supports x402 (HTTP 402 Payment Required), point Mithril at the URL. It handles payment negotiation, signing, and retry automatically. You get the service's response back. Each wallet has deposits (your on-chain USDC) and a credit line. Deposits are spent first, then credit kicks in automatically.
+
+- **Pay for services** — if a service supports x402 (HTTP 402 Payment Required), point Mithril at the URL. It handles payment negotiation, signing, and retry automatically. You get the service's response back. Each wallet has deposits (your on-chain USDC) and a credit line. Deposits are spent first, then credit kicks in automatically.
+- **Send USDC** — transfer USDC from your wallet to any on-chain address. Only your deposit balance can be sent (not credit). Use cash advance first if you need to borrow and then send.
 - **Check your spending power** — see deposits + available credit across all wallets.
 - **Manage your credit** — make payments, view transactions. Pay your bill on time and you never pay interest.
 - **Take a cash advance** — withdraw USDC from your credit line to your deposit address. 3% fee, interest starts immediately.
@@ -83,11 +88,13 @@ Your human operator signs up at the dashboard, creates your agent, sets up your 
 This skill is for **one specific agent**. If your operator runs multiple agents, each one has a separate `MITHRIL_API_KEY` and operates independently.
 
 Store your API key:
+
 ```bash
 export MITHRIL_API_KEY="mith_..."
 ```
 
 Every request needs this header:
+
 ```
 Authorization: Bearer <MITHRIL_API_KEY>
 ```
@@ -102,8 +109,8 @@ Authorization: Bearer <MITHRIL_API_KEY>
 |-----------|----------|
 | "How much can I spend?" / "What's my spending power?" | `GET /v1/agent/spending-power` |
 | "Pay my Mithril bill" / "Repay my credit line" | `POST /v1/wallets/:id/repay` |
-| "Buy data from this API" / "Purchase from this x402 service" | `POST /v1/agent/purchase` |
-| "How much does this service cost?" | `GET /v1/wallets/:id/purchase/preview` |
+| "Buy data from this API" / "Purchase from this x402 service" | `POST /v1/agent/pay` |
+| "Send USDC to this address" / "Transfer funds" | `POST /v1/wallets/:id/send` |
 | "Show me my balance sheet" | `GET /v1/balance-sheet` |
 | "What's my credit score?" / "Show my credit profile" | `GET /v1/credit-profile` |
 | "List my wallets" / "What wallets do I have?" | `GET /v1/wallets` |
@@ -119,11 +126,11 @@ Authorization: Bearer <MITHRIL_API_KEY>
 
 When the user's request could map to multiple endpoints, use this decision tree:
 
-1. **Buying from a service that returns HTTP 402** → `POST /v1/agent/purchase`
+1. **Buying from a service that returns HTTP 402** → `POST /v1/agent/pay`
    - Mithril handles payment negotiation, signing, and retry automatically.
 
-2. **Not sure if a service charges?** → `GET /v1/wallets/:id/purchase/preview` first
-   - Check the price before committing. If `payment_required` is false, call the service directly.
+2. **Sending USDC to an address** → `POST /v1/wallets/:id/send`
+   - Only deposit balance can be sent. Credit cannot be transferred directly.
 
 3. **Need to use a specific wallet instead of primary** → use the `/v1/wallets/:id/…` variant of any endpoint.
 
@@ -138,15 +145,15 @@ When the user's request could map to multiple endpoints, use this decision tree:
 
 ---
 
-## Typical Workflow: Purchasing from an x402 Service
+## Typical Workflow: Paying an x402 Service
 
 ```bash
-# Step 1: Preview the price (optional but recommended)
-curl -sS "https://api.trymithril.com/v1/wallets/YOUR_WALLET_ID/purchase/preview?url=https://api.service.com/data&method=GET" \
+# Step 1: Check spending power (recommended before large payments)
+curl -sS "https://api.trymithril.com/v1/agent/spending-power" \
   -H "Authorization: Bearer $MITHRIL_API_KEY"
 
-# Step 2: Make the purchase
-curl -sS -X POST https://api.trymithril.com/v1/agent/purchase \
+# Step 2: Make the payment
+curl -sS -X POST https://api.trymithril.com/v1/agent/pay \
   -H "Authorization: Bearer $MITHRIL_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -165,7 +172,7 @@ curl -sS -X POST https://api.trymithril.com/v1/agent/purchase \
 
 1. **Always check spending-power before a large purchase.** Spending endpoints are rate-limited (~10/min). Don't waste a call on an insufficient-funds failure — check `GET /v1/agent/spending-power` first.
 
-2. **`response.body` from purchases is the raw response.** After `POST /v1/agent/purchase`, the `response.body` field contains the service's raw response (typically JSON). Use it directly.
+2. **`response.body` from payments is the raw response.** After `POST /v1/agent/pay`, the `response.body` field contains the service's raw response (typically JSON). Use it directly.
 
 3. **The `amount` field is a string, not a number.** Send `"25.00"` not `25.00`. The API rejects numeric values.
 
@@ -237,12 +244,12 @@ GET /v1/agent/spending-power
 
 ---
 
-### Purchase
+### Pay
 
 Auto-selects your primary wallet. Handles x402 payment negotiation automatically.
 
 ```
-POST /v1/agent/purchase
+POST /v1/agent/pay
 ```
 
 | Field | Type | Required | Description |
@@ -277,58 +284,38 @@ POST /v1/agent/purchase
 - `response.body` is the raw response body from the service (typically JSON).
 - `payment` is null if the service didn't require payment (no 402).
 
-### Purchase from Specific Wallet
+### Pay from Specific Wallet
 
 ```
-POST /v1/wallets/:id/purchase
+POST /v1/wallets/:id/pay
 ```
 
 Same request and response as above.
 
-### Preview Purchase Price
+---
 
-Check what a service will cost before committing.
+### Send
+
+Transfer USDC from your wallet to any on-chain address. Only your deposit balance can be sent — credit cannot be transferred directly. If you need to borrow and send, use cash advance first.
 
 ```
-GET /v1/wallets/:id/purchase/preview?url=https://api.service.com/data&method=GET
+POST /v1/wallets/:id/send
 ```
 
-| Param | Type | Required | Description |
+| Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `url` | string | yes | Target service URL |
-| `method` | string | no | HTTP method (default `"GET"`) |
+| `destination` | string | yes | On-chain address to send to |
+| `amount` | string | yes | USDC amount (e.g. `"100.00"`) |
+| `network` | string | yes | `"base"`, `"polygon"`, `"arbitrum"`, `"ethereum"`, or `"solana"` |
 
-**Response (200) — payment required:**
+**Response (200):**
 ```json
 {
-  "url": "https://api.service.com/data",
-  "payment_required": true,
-  "price": {
-    "amount": "0.05",
-    "currency": "USDC",
-    "networks": ["base"],
-    "recipient": "0x..."
-  },
-  "can_afford": true,
-  "spending_power": {
-    "deposit_balance": "500.00",
-    "available_credit": "5000.00",
-    "total": "5500.00"
-  }
-}
-```
-
-**Response (200) — no payment required:**
-```json
-{
-  "url": "https://api.service.com/data",
-  "payment_required": false,
-  "can_afford": true,
-  "spending_power": {
-    "deposit_balance": "500.00",
-    "available_credit": "5000.00",
-    "total": "5500.00"
-  }
+  "tx_hash": "0x...",
+  "amount": "100.000000",
+  "network": "base",
+  "deposit_used": "100.000000",
+  "credit_used": "0.000000"
 }
 ```
 
@@ -499,7 +486,7 @@ GET /v1/wallets/:id
 
 #### Set Primary Wallet
 
-The primary wallet is used by `POST /v1/agent/purchase`.
+The primary wallet is used by `POST /v1/agent/pay`.
 
 ```
 PUT /v1/wallets/:id/primary
